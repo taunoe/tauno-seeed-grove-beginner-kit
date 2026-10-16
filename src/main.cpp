@@ -1,51 +1,105 @@
 /*********************************************************************************
- *  Optimized Arduino Code for a Multi-Sensor Monitor (Corrected Version)
  *
- *  Date: 2025-09-15
+ *  Date: 2026-10-16
  *
- *  Correction Summary (Thanks to user feedback):
- *  - Removed the dependency on AHTxx.h library for DHT20.
- *  - Now uses the official Adafruit DHT.h library, which natively supports
- *    both DHT11 (single-wire) and DHT20 (I2C).
- *  - This simplifies the code and resolves the "'AHTxx' does not name a type" error.
  *
  *********************************************************************************/
 
-// --- LIBRARIES ---
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <MsTimer2.h>
 #include "DHT.h" // Unified library for both DHT11 and DHT20
 #include "LIS3DHTR.h"
-
-
-// --- SENSOR SELECTION MACROS ---
-// Choose your temperature/humidity sensor. Options: SENSOR_DHT11, SENSOR_DHT20
-#define TEMP_HUMID_SENSOR_TYPE SENSOR_DHT20
-
-// Choose your pressure sensor. Options: SENSOR_BME280, SENSOR_SPL07
-#define PRESSURE_SENSOR_TYPE SENSOR_SPL07
-
-// --- UNCONDITIONAL INCLUDES FOR PRESSURE SENSORS ---
-// We include both headers unconditionally to ensure the IDE links the correct files.
 #include "Seeed_BMP280.h"
-#include "SPL07-003.h"
 
-// --- CONSTANTS AND ENUMS ---
-#define SENSOR_DHT11 1
-#define SENSOR_DHT20 2
-#define SENSOR_BME280 3
-#define SENSOR_SPL07 4
+// Sensor status or error codes
+typedef enum {
+    SENSOR_OK = 0,
+    SENSOR_ERR_TIMEOUT,
+    SENSOR_ERR_DISCONNECTED,
+    SENSOR_ERR_OUT_OF_BOUNDS
+} SensorStatus_t;
 
-// Board version selection for different pinouts
-#define BOARD_VERSION 2
+/***************************************************************************
+ * Sensor data structure
+ */
+typedef struct {
+  const uint8_t pin;        
+  int value;
+  SensorStatus_t status;
+} LightSensor_t;
+
+LightSensor_t valgus_andur = {A6, 0, SENSOR_OK}; // Light sensor on pin A6
+
+
+/***************************************************************************
+ * Sensor data structure
+ */
+typedef struct {
+  const uint8_t pin;        
+  int value;
+  SensorStatus_t status;
+} SoundSensor_t;
+
+SoundSensor_t heli_andur = {A2, 0, SENSOR_OK};   // Sound sensor on pin A2
+
+// Sound sensor moving average filter settings
+const int SOUND_QUEUE_LEN = 10;
+
+// Sound data queue for filtering
+int soundQueue[SOUND_QUEUE_LEN] = {0};
+
+/***************************************************************************
+ * Sensor data structure
+ */
+typedef struct {
+  const uint8_t pin;        
+  float humid;
+  float temp;
+  SensorStatus_t status;
+} TempHumSensor_t;
+
+TempHumSensor_t dht_andur = {3, 0.0, 0.0, SENSOR_OK}; // DHT sensor on pin 3
+
+DHT dht(dht_andur.pin, DHT11);
+
+/**************************************************************************
+ * Sensor data structure
+ */
+typedef struct {       
+  float pressure;
+  SensorStatus_t status;
+} PressureSensor_t;
+
+PressureSensor_t bmp280_andur = {0.0, SENSOR_OK}; // BMP280 sensor on pin A1
+
+BMP280 bmp280;
+
+/**************************************************************************
+ * Sensor data structure
+ */
+typedef struct {       
+  float x;
+  float y;
+  float z;
+  SensorStatus_t status;
+} AccelemeterSensor_t;
+
+AccelemeterSensor_t lis3dht_andur = {0.0, 0.0, 0.0, SENSOR_OK}; // LIS3DHTR accelerometer
+
+LIS3DHTR<TwoWire> accelerometer;
+
+// Variables for accelerometer ball position
+int ball_x = 80;
+int ball_y = 35;
+
+
 
 // Button press detection constants
 const int LONG_PRESS_CLICKS = 100; // Clicks (10ms each) to detect a long press (100 * 10ms = 1s)
 
-// Sound sensor moving average filter settings
-const int SOUND_QUEUE_LEN = 10;
+
 
 // Enums for program modes for better readability
 enum ProgramMode {
@@ -55,6 +109,10 @@ enum ProgramMode {
   MODE_PRESSURE = 4,
   MODE_ACCEL = 5
 };
+
+// --- GLOBAL STATE VARIABLES ---
+ProgramMode currentMode = MODE_LIGHT;
+bool isInMenuMode = false;
 
 // --- BITMAPS (Stored in PROGMEM to save RAM) ---
 // (Bitmap data is kept the same as the original code)
@@ -68,86 +126,62 @@ const unsigned char sound_bmp1[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0
 const unsigned char acel_bmp[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x07, 0x00, 0x00, 0x07, 0x1c, 0x00, 0x80, 0x01, 0x60, 0x00, 0x60, 0x00, 0x80, 0x00, 0x30, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x04, 0x0c, 0x00, 0x00, 0x04, 0x04, 0x20, 0x01, 0x08, 0x04, 0x10, 0x02, 0x08, 0x02, 0xf8, 0x03, 0x08, 0x02, 0x0c, 0x0e, 0x10, 0x02, 0x0a, 0x10, 0x10, 0x02, 0x0a, 0x10, 0x10, 0x02, 0x02, 0x0a, 0x10, 0x02, 0x18, 0x06, 0x18, 0x06, 0x10, 0x02, 0x08, 0x04, 0x20, 0x01, 0x08, 0x04, 0xc0, 0x00, 0x0c, 0x08, 0x00, 0x00, 0x04, 0x18, 0x00, 0x00, 0x02, 0x30, 0x00, 0x00, 0x03, 0x60, 0x00, 0x80, 0x01, 0xc0, 0x00, 0xc0, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00, 0xfc, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 const unsigned char temp_bmp1[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x00, 0xfe, 0xff, 0xff, 0x07, 0xfe, 0xff, 0xff, 0x1f, 0x8f, 0xff, 0xff, 0x3f, 0x0f, 0x00, 0x00, 0x3e, 0x0f, 0x00, 0x00, 0x3e, 0x8f, 0xff, 0xff, 0x3f, 0xfe, 0xff, 0xff, 0x1f, 0xfe, 0xff, 0xff, 0x07, 0xfc, 0x01, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-// --- PIN DEFINITIONS based on BOARD_VERSION ---
-#if BOARD_VERSION == 1
-  const byte ledPin = 5;
-  const byte buzzerPin = 6;
-  const byte buttonPin = 2;
-  const byte rotaryPin = A1;
-  const byte lightPin = A2;
-  const byte soundPin = A0;
-  const byte dhtPin = 4;
-#elif BOARD_VERSION == 2
-  const byte ledPin = 4;
-  const byte buzzerPin = 5;
-  const byte buttonPin = 6;
-  const byte rotaryPin = A0;
-  const byte lightPin = A6;
-  const byte soundPin = A2;
-  const byte dhtPin = 3;
-#endif
+const byte LED_PIN = 4;
+const byte BUZZER_PIN = 5;
+const byte BUTTON_PIN = 6;
+const byte ROTARY_PIN = A0;
+//const byte LIGHT_PIN = A6;
+//const byte SOUND_PIN = A2;
+//const byte DHT_PIN = 3;
+
 
 // --- HARDWARE OBJECTS ---
 U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(U8G2_R2, /* reset=*/U8X8_PIN_NONE);
-LIS3DHTR<TwoWire> accelerometer;
-
-// --- CORRECTED SENSOR DECLARATION ---
-// Conditionally define DHTTYPE based on the sensor selection
-#if (TEMP_HUMID_SENSOR_TYPE == SENSOR_DHT11)
-  #define DHTTYPE DHT11
-#elif (TEMP_HUMID_SENSOR_TYPE == SENSOR_DHT20)
-  #define DHTTYPE DHT11
-#endif
-// Create a single DHT object. The library handles I2C vs single-wire internally.
-// For I2C sensors like DHT20, the 'dhtPin' argument is ignored by the library.
-DHT dht(dhtPin, DHTTYPE);
 
 
-// Conditionally declare pressure sensor object
-#if (PRESSURE_SENSOR_TYPE == SENSOR_BME280)
-  BMP280 bmp280;
-#elif (PRESSURE_SENSOR_TYPE == SENSOR_SPL07)
-  SPL07_003 spl;
-#endif
 
-// --- GLOBAL STATE VARIABLES ---
-ProgramMode currentMode = MODE_LIGHT;
-bool isInMenuMode = false;
 
-// Variables for accelerometer ball position
-int ball_x = 80;
-int ball_y = 35;
-
-// Sound data queue for filtering
-int soundQueue[SOUND_QUEUE_LEN] = {0};
 
 // --- VOLATILE VARIABLES FOR ISR ---
 volatile int pressCounter = 0;
 volatile bool ledBlinkEnable = false;
 
+
 // --- FUNCTION PROTOTYPES ---
+void read_light();
 void display_light();
+
+void read_sound();
 void display_sound();
+
+void read_temp_humid();
 void display_temp_humid();
+
+void read_pressure();
 void display_pressure();
+
+void read_accel();
 void display_accel();
+
 void display_menu();
 void handle_button();
 int filter_sound(int newData, int queue[], int len);
 
+
 // --- INTERRUPT SERVICE ROUTINE (ISR) ---
 void checker_ISR() {
   static int ledBlinkCounter = 0;
+
   if (ledBlinkEnable) {
-    digitalWrite(ledPin, HIGH);
+    digitalWrite(LED_PIN, HIGH);
     ledBlinkCounter++;
     if (ledBlinkCounter > 10) {
       ledBlinkCounter = 0;
       ledBlinkEnable = false;
-      digitalWrite(ledPin, LOW);
+      digitalWrite(LED_PIN, LOW);
     }
   }
-  if (digitalRead(buttonPin) == HIGH) {
+  if (digitalRead(BUTTON_PIN) == HIGH) {
     pressCounter++;
   } else {
     pressCounter = 0;
@@ -159,41 +193,27 @@ void setup() {
   Serial.begin(115200);
   Wire.begin();
 
-  // --- Initialize Pins ---
-  pinMode(ledPin, OUTPUT);
-  pinMode(buzzerPin, OUTPUT);
-  pinMode(buttonPin, INPUT);
-  pinMode(rotaryPin, INPUT);
-  pinMode(lightPin, INPUT);
-  pinMode(soundPin, INPUT);
-  digitalWrite(buzzerPin, LOW);
+  // Initialize Pins
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT);
+  pinMode(ROTARY_PIN, INPUT);
+  pinMode(valgus_andur.pin, INPUT);
+  pinMode(heli_andur.pin, INPUT);
+  digitalWrite(BUZZER_PIN, LOW);
 
-  // --- Initialize Display ---
+  // Initialize Display
   u8g2.begin();
 
-  // --- Initialize Sensors ---
   // Temperature & Humidity Sensor
   dht.begin();
-  Serial.print("DHT Sensor Type: ");
-  Serial.println(DHTTYPE);
 
   // Pressure Sensor
-#if (PRESSURE_SENSOR_TYPE == SENSOR_BME280)
   if (!bmp280.init()) {
     Serial.println("BME280 init error!");
   } else {
     Serial.println("BME280 sensor initialized.");
   }
-#elif (PRESSURE_SENSOR_TYPE == SENSOR_SPL07)
-  if (!spl.begin(SPL07_ADDR_DEF, &Wire)) {
-    Serial.println("SPL07-003 init error!");
-  } else {
-    Serial.println("SPL07-003 sensor initialized.");
-    spl.setPressureConfig(SPL07_4HZ, SPL07_32SAMPLES);
-    spl.setTemperatureConfig(SPL07_4HZ, SPL07_1SAMPLE);
-    spl.setMode(SPL07_CONT_PRES_TEMP);
-  }
-#endif
 
   // Accelerometer
   accelerometer.begin(Wire, LIS3DHTR_ADDRESS_UPDATED);
@@ -207,7 +227,7 @@ void setup() {
   
   // Pre-fill the sound queue for the filter
   for (int i = 0; i < SOUND_QUEUE_LEN; i++) {
-    soundQueue[i] = analogRead(soundPin);
+    soundQueue[i] = analogRead(heli_andur.pin);
     delay(2);
   }
 
@@ -219,6 +239,13 @@ void setup() {
 // --- MAIN LOOP ---
 void loop() {
   handle_button();
+
+  read_light();
+  read_sound();
+  read_temp_humid();
+  read_pressure();
+  read_accel();
+
   if (isInMenuMode) {
     display_menu();
   } else {
@@ -232,16 +259,18 @@ void loop() {
   }
 }
 
+/************************************************************************** */
 // --- BUTTON HANDLING LOGIC ---
 void handle_button() {
   static bool buttonWasPressed = false;
+
   if (pressCounter > 0) {
     buttonWasPressed = true;
     ledBlinkEnable = true;
     if (pressCounter > LONG_PRESS_CLICKS) {
       isInMenuMode = !isInMenuMode;
-      tone(buzzerPin, 800, 150);
-      while (digitalRead(buttonPin) == HIGH) {
+      tone(BUZZER_PIN, 800, 150);
+      while (digitalRead(BUTTON_PIN) == HIGH) {
         delay(10);
       }
       pressCounter = 0;
@@ -250,20 +279,23 @@ void handle_button() {
   } 
   else if (buttonWasPressed) {
     buttonWasPressed = false;
+
     if (isInMenuMode) {
-      int selected = analogRead(rotaryPin) / 204.8 + 1;
+      int selected = analogRead(ROTARY_PIN) / 204.8 + 1;
+      Serial.println( selected);
       if (selected >= MODE_LIGHT && selected <= MODE_ACCEL) {
         currentMode = (ProgramMode)selected;
       }
       isInMenuMode = false;
-      tone(buzzerPin, 500, 50);
+      tone(BUZZER_PIN, 500, 50);
     }
   }
 }
 
+
 // --- DISPLAY FUNCTIONS ---
 void display_menu() {
-  int n = analogRead(rotaryPin) / 204.8 + 1;
+  int n = analogRead(ROTARY_PIN) / 204.8 + 1;
   u8g2.firstPage();
   do {
     u8g2.setFont(u8g2_font_ncenB10_tr);
@@ -279,26 +311,47 @@ void display_menu() {
   } while (u8g2.nextPage());
 }
 
+
+void read_light() {
+  valgus_andur.value = analogRead(valgus_andur.pin);
+}
+
+
 void display_light() {
-  int l = analogRead(lightPin);
   u8g2.firstPage();
+
   do {
     u8g2.setFont(u8g2_font_t0_16b_mr);
     u8g2.drawCircle(8, 8, 8, U8G2_DRAW_ALL);
-    if (l >= 50 && l < 100) u8g2.drawDisc(8, 8, 8, U8G2_DRAW_UPPER_LEFT);
-    if (l >= 100 && l < 200) u8g2.drawDisc(8, 8, 8, U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_UPPER_LEFT);
-    if (l >= 200 && l < 350) u8g2.drawDisc(8, 8, 8, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_UPPER_LEFT);
-    if (l >= 350) u8g2.drawDisc(8, 8, 8, U8G2_DRAW_ALL);
+    if (valgus_andur.value >= 50 && valgus_andur.value < 100) {
+      u8g2.drawDisc(8, 8, 8, U8G2_DRAW_UPPER_LEFT);
+    }
+    if (valgus_andur.value >= 100 && valgus_andur.value < 200) {
+      u8g2.drawDisc(8, 8, 8, U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_UPPER_LEFT);
+    }
+    if (valgus_andur.value >= 200 && valgus_andur.value < 350) {
+      u8g2.drawDisc(8, 8, 8, U8G2_DRAW_LOWER_LEFT | U8G2_DRAW_UPPER_RIGHT | U8G2_DRAW_UPPER_LEFT);
+    }
+    if (valgus_andur.value >= 350) {
+      u8g2.drawDisc(8, 8, 8, U8G2_DRAW_ALL);
+    }
     u8g2.setCursor(26, 32); u8g2.print(F("Light:"));
-    u8g2.setCursor(80, 32); u8g2.print(l);
+    u8g2.setCursor(80, 32); u8g2.print(valgus_andur.value);
     u8g2.drawHLine(0, 48, 128);
   } while (u8g2.nextPage());
 }
 
+
+void read_sound() {
+  heli_andur.value = analogRead(heli_andur.pin);
+}
+
+
 void display_sound() {
-  int s = analogRead(soundPin);
-  s = filter_sound(s, soundQueue, SOUND_QUEUE_LEN);
+  int s = filter_sound(heli_andur.value, soundQueue, SOUND_QUEUE_LEN);
+
   u8g2.firstPage();
+
   do {
     u8g2.setFont(u8g2_font_t0_16b_mr);
     u8g2.drawXBMP(0, 0, 20, 20, sound_bmp);
@@ -307,54 +360,66 @@ void display_sound() {
   } while (u8g2.nextPage());
 }
 
-void display_temp_humid() {
-  // The dht.read calls are the same for both DHT11 and DHT20
-  float humid = dht.readHumidity();
-  float temp = dht.readTemperature();
 
+void read_temp_humid() {
+  dht_andur.humid = dht.readHumidity();
+  dht_andur.temp = dht.readTemperature();
+}
+
+void display_temp_humid() {
   u8g2.firstPage();
+
   do {
     u8g2.setFont(u8g2_font_t0_16b_mr);
     u8g2.drawXBMP(0, 0, 20, 30, temp_bmp);
     u8g2.drawXBMP(0, 35, 20, 20, hum_bmp);
     u8g2.drawLine(25, 0, 25, 64);
     u8g2.setCursor(32, 16); u8g2.print(F("Temp:"));
-    u8g2.setCursor(78, 16); u8g2.print(temp, 1);
+    u8g2.setCursor(78, 16); u8g2.print(dht_andur.temp, 1);
     u8g2.drawStr(110, 16, "C");
     u8g2.setCursor(32, 48); u8g2.print(F("Humid:"));
-    u8g2.setCursor(84, 48); u8g2.print(humid, 0);
+    u8g2.setCursor(84, 48); u8g2.print(dht_andur.humid, 0);
     u8g2.drawStr(110, 48, "%");
   } while (u8g2.nextPage());
 }
 
+
+void read_pressure() {
+  bmp280_andur.pressure = bmp280.getPressure(); // Pa
+}
+  
 void display_pressure() {
-  float pressure = 0;
-#if (PRESSURE_SENSOR_TYPE == SENSOR_BME280)
-  pressure = bmp280.getPressure(); // Pa
-#elif (PRESSURE_SENSOR_TYPE == SENSOR_SPL07)
-  if (spl.pressureAvailable()) {
-    pressure = spl.readPressure(); // Pa
-  }
-#endif
   u8g2.firstPage();
+
   do {
     u8g2.setFont(u8g2_font_t0_16b_mr);
     u8g2.drawXBMP(0, 0, 20, 20, pressure_bmp1);
     u8g2.setCursor(20, 37); u8g2.print("Pressure:");
-    u8g2.setCursor(25, 51); u8g2.print(pressure / 100.0F, 2);
+    u8g2.setCursor(25, 51); u8g2.print(bmp280_andur.pressure / 100.0F, 2);
     u8g2.print(" hPa");
   } while (u8g2.nextPage());
 }
 
-void display_accel() {
-  float ax = accelerometer.getAccelerationX();
-  float ay = -accelerometer.getAccelerationY();
-  float az = accelerometer.getAccelerationZ();
 
-  if (ay > 0.2) ball_y -= (ay * 2);
-  if (ay < -0.2) ball_y -= (ay * 2);
-  if (ax > 0.2) ball_x += (ax * 2);
-  if (ax < -0.2) ball_x += (ax * 2);
+void read_accel() {
+  lis3dht_andur.x = accelerometer.getAccelerationX();
+  lis3dht_andur.y = - accelerometer.getAccelerationY();
+  lis3dht_andur.z = accelerometer.getAccelerationZ();
+}
+
+void display_accel() {
+  if (lis3dht_andur.y > 0.2) {
+    ball_y -= (lis3dht_andur.y * 2);
+  }
+  if (lis3dht_andur.y < -0.2) {
+    ball_y -= (lis3dht_andur.y * 2);
+  }
+  if (lis3dht_andur.x > 0.2) {
+    ball_x += (lis3dht_andur.x * 2);
+  }
+  if (lis3dht_andur.x < -0.2) {
+    ball_x += (lis3dht_andur.x * 2);
+  }
 
   ball_x = constrain(ball_x, 54, 106);
   ball_y = constrain(ball_y, 14, 56);
@@ -362,9 +427,9 @@ void display_accel() {
   u8g2.firstPage();
   do {
     u8g2.setFont(u8g2_font_t0_12b_mr);
-    u8g2.setCursor(0, 16); u8g2.print(F("X:")); u8g2.print(ax, 2);
-    u8g2.setCursor(0, 32); u8g2.print(F("Y:")); u8g2.print(ay, 2);
-    u8g2.setCursor(0, 48); u8g2.print(F("Z:")); u8g2.print(az, 2);
+    u8g2.setCursor(0, 16); u8g2.print(F("X:")); u8g2.print(lis3dht_andur.x, 2);
+    u8g2.setCursor(0, 32); u8g2.print(F("Y:")); u8g2.print(lis3dht_andur.y, 2);
+    u8g2.setCursor(0, 48); u8g2.print(F("Z:")); u8g2.print(lis3dht_andur.z, 2);
     u8g2.drawFrame(50, 10, 60, 50);
     u8g2.drawDisc(ball_x, ball_y, 3, U8G2_DRAW_ALL);
   } while (u8g2.nextPage());
