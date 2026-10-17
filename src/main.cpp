@@ -1,6 +1,6 @@
 /*********************************************************************************
- *
- *  Date: 2026-10-16
+ *  Tauno Erik
+ *  Alustatud: 2026.10.16
  *
  *
  *********************************************************************************/
@@ -9,7 +9,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <MsTimer2.h>
-#include "DHT.h" // Unified library for both DHT11 and DHT20
+#include "DHT.h"
 #include "LIS3DHTR.h"
 #include "Seeed_BMP280.h"
 
@@ -22,37 +22,39 @@ typedef enum {
 } SensorStatus_t;
 
 /***************************************************************************
- * Sensor data structure
- */
+ * Light Sensor data structure
+ * Pin A6
+ ***************************************************************************/
 typedef struct {
   const uint8_t pin;        
   int value;
   SensorStatus_t status;
 } LightSensor_t;
 
-LightSensor_t valgus_andur = {A6, 0, SENSOR_OK}; // Light sensor on pin A6
+LightSensor_t valgus_andur = {A6, 0, SENSOR_OK};
 
 
 /***************************************************************************
- * Sensor data structure
- */
+ * Sound Sensor data structure
+ * Pin A2
+ ***************************************************************************/
+// Sound sensor moving average filter settings
+#define SOUND_QUEUE_LEN  10
+
 typedef struct {
-  const uint8_t pin;        
+  const uint8_t pin;
   int value;
+  int queue[SOUND_QUEUE_LEN];
   SensorStatus_t status;
 } SoundSensor_t;
 
-SoundSensor_t heli_andur = {A2, 0, SENSOR_OK};   // Sound sensor on pin A2
+SoundSensor_t heli_andur = {A2, 0, {0}, SENSOR_OK};
 
-// Sound sensor moving average filter settings
-const int SOUND_QUEUE_LEN = 10;
-
-// Sound data queue for filtering
-int soundQueue[SOUND_QUEUE_LEN] = {0};
 
 /***************************************************************************
- * Sensor data structure
- */
+ * Temperature and Humidity Sensor data structure
+ * DHT sensor on pin 3
+ ***************************************************************************/
 typedef struct {
   const uint8_t pin;        
   float humid;
@@ -60,49 +62,94 @@ typedef struct {
   SensorStatus_t status;
 } TempHumSensor_t;
 
-TempHumSensor_t dht_andur = {3, 0.0, 0.0, SENSOR_OK}; // DHT sensor on pin 3
+TempHumSensor_t dht_andur = {3, 0.0, 0.0, SENSOR_OK}; 
 
 DHT dht(dht_andur.pin, DHT11);
 
 /**************************************************************************
- * Sensor data structure
- */
+ * Pressure Sensor data structure
+ * BMP280 sensor on pin A1
+ **************************************************************************/
 typedef struct {       
   float pressure;
   SensorStatus_t status;
 } PressureSensor_t;
 
-PressureSensor_t bmp280_andur = {0.0, SENSOR_OK}; // BMP280 sensor on pin A1
+PressureSensor_t bmp280_andur = {0.0, SENSOR_OK}; 
 
 BMP280 bmp280;
 
 /**************************************************************************
- * Sensor data structure
- */
+ * Accelerometer Sensor data structure
+ * LIS3DHTR accelerometer
+ **************************************************************************/
 typedef struct {       
   float x;
   float y;
   float z;
   SensorStatus_t status;
-} AccelemeterSensor_t;
+} AccelerometerSensor_t;
 
-AccelemeterSensor_t lis3dht_andur = {0.0, 0.0, 0.0, SENSOR_OK}; // LIS3DHTR accelerometer
+AccelerometerSensor_t lis3dht_andur = {0.0, 0.0, 0.0, SENSOR_OK};
 
 LIS3DHTR<TwoWire> accelerometer;
 
-// Variables for accelerometer ball position
-int ball_x = 80;
-int ball_y = 35;
 
 
 
-// Button press detection constants
-const int LONG_PRESS_CLICKS = 100; // Clicks (10ms each) to detect a long press (100 * 10ms = 1s)
+/**************************************************************************
+ * LED data structure
+ * LED on pin 4
+ **************************************************************************/
+typedef struct {       
+  const uint8_t pin;
+  volatile bool state;
+} LED_t;
+
+LED_t LED = {4, false};
 
 
+/**************************************************************************
+ * Buzzer data structure
+ * Buzzer on pin 5
+ **************************************************************************/
+typedef struct {       
+  const uint8_t pin;
+} Buzzer_t;
 
-// Enums for program modes for better readability
+Buzzer_t BUZZER = {5};
+
+
+/**************************************************************************
+ * Button data structure
+ * Button on pin 6
+ **************************************************************************/
+typedef struct {       
+  const uint8_t pin;
+  const uint8_t long_press;
+  volatile int counter;
+} Button_t;
+
+Button_t BTN = {6, 100, 0};
+
+
+/**************************************************************************
+ * Rotary data structure
+ * Rotary potentiometer on pin A0
+ **************************************************************************/
+typedef struct {       
+  const uint8_t pin;
+} Rotary_t;
+
+Rotary_t ROTARY = {A0};
+
+
+/**************************************************************************
+ * Menu data structure
+ **************************************************************************/
+
 enum ProgramMode {
+  MODE_NONE = 0,
   MODE_LIGHT = 1,
   MODE_SOUND = 2,
   MODE_TEMP_HUMID = 3,
@@ -110,9 +157,13 @@ enum ProgramMode {
   MODE_ACCEL = 5
 };
 
-// --- GLOBAL STATE VARIABLES ---
-ProgramMode currentMode = MODE_LIGHT;
-bool isInMenuMode = false;
+typedef struct {       
+  bool isActive;
+  ProgramMode mode;
+} Menu_t;
+
+Menu_t MENU = {false, MODE_LIGHT};
+
 
 // --- BITMAPS (Stored in PROGMEM to save RAM) ---
 // (Bitmap data is kept the same as the original code)
@@ -126,81 +177,52 @@ const unsigned char sound_bmp1[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0
 const unsigned char acel_bmp[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x07, 0x00, 0x00, 0x07, 0x1c, 0x00, 0x80, 0x01, 0x60, 0x00, 0x60, 0x00, 0x80, 0x00, 0x30, 0x00, 0x00, 0x01, 0x10, 0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x04, 0x0c, 0x00, 0x00, 0x04, 0x04, 0x20, 0x01, 0x08, 0x04, 0x10, 0x02, 0x08, 0x02, 0xf8, 0x03, 0x08, 0x02, 0x0c, 0x0e, 0x10, 0x02, 0x0a, 0x10, 0x10, 0x02, 0x0a, 0x10, 0x10, 0x02, 0x02, 0x0a, 0x10, 0x02, 0x18, 0x06, 0x18, 0x06, 0x10, 0x02, 0x08, 0x04, 0x20, 0x01, 0x08, 0x04, 0xc0, 0x00, 0x0c, 0x08, 0x00, 0x00, 0x04, 0x18, 0x00, 0x00, 0x02, 0x30, 0x00, 0x00, 0x03, 0x60, 0x00, 0x80, 0x01, 0xc0, 0x00, 0xc0, 0x00, 0x00, 0x03, 0x30, 0x00, 0x00, 0xfc, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 const unsigned char temp_bmp1[] U8X8_PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x00, 0xfe, 0xff, 0xff, 0x07, 0xfe, 0xff, 0xff, 0x1f, 0x8f, 0xff, 0xff, 0x3f, 0x0f, 0x00, 0x00, 0x3e, 0x0f, 0x00, 0x00, 0x3e, 0x8f, 0xff, 0xff, 0x3f, 0xfe, 0xff, 0xff, 0x1f, 0xfe, 0xff, 0xff, 0x07, 0xfc, 0x01, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-const byte LED_PIN = 4;
-const byte BUZZER_PIN = 5;
-const byte BUTTON_PIN = 6;
-const byte ROTARY_PIN = A0;
-//const byte LIGHT_PIN = A6;
-//const byte SOUND_PIN = A2;
-//const byte DHT_PIN = 3;
 
-
-// --- HARDWARE OBJECTS ---
 U8G2_SSD1306_128X64_NONAME_1_HW_I2C u8g2(U8G2_R2, /* reset=*/U8X8_PIN_NONE);
 
 
+// FUNCTION PROTOTYPES
+void checker_ISR();
 
-
-
-// --- VOLATILE VARIABLES FOR ISR ---
-volatile int pressCounter = 0;
-volatile bool ledBlinkEnable = false;
-
-
-// --- FUNCTION PROTOTYPES ---
 void read_light();
+void print_light();
 void display_light();
 
 void read_sound();
+void print_sound();
 void display_sound();
 
 void read_temp_humid();
+void print_temp_humid();
 void display_temp_humid();
 
 void read_pressure();
+void print_pressure();
 void display_pressure();
 
 void read_accel();
+void print_accel();
 void display_accel();
 
 void display_menu();
 void handle_button();
+
 int filter_sound(int newData, int queue[], int len);
 
 
-// --- INTERRUPT SERVICE ROUTINE (ISR) ---
-void checker_ISR() {
-  static int ledBlinkCounter = 0;
-
-  if (ledBlinkEnable) {
-    digitalWrite(LED_PIN, HIGH);
-    ledBlinkCounter++;
-    if (ledBlinkCounter > 10) {
-      ledBlinkCounter = 0;
-      ledBlinkEnable = false;
-      digitalWrite(LED_PIN, LOW);
-    }
-  }
-  if (digitalRead(BUTTON_PIN) == HIGH) {
-    pressCounter++;
-  } else {
-    pressCounter = 0;
-  }
-}
-
-// --- SETUP ---
+/***********************************************************************/
 void setup() {
   Serial.begin(115200);
   Wire.begin();
 
   // Initialize Pins
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(BUTTON_PIN, INPUT);
-  pinMode(ROTARY_PIN, INPUT);
+  pinMode(LED.pin, OUTPUT);
+  pinMode(BUZZER.pin, OUTPUT);
+  pinMode(BTN.pin, INPUT);
+  pinMode(ROTARY.pin, INPUT);
   pinMode(valgus_andur.pin, INPUT);
   pinMode(heli_andur.pin, INPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(BUZZER.pin, LOW);
 
   // Initialize Display
   u8g2.begin();
@@ -210,93 +232,162 @@ void setup() {
 
   // Pressure Sensor
   if (!bmp280.init()) {
-    Serial.println("BME280 init error!");
+    bmp280_andur.status = SENSOR_ERR_DISCONNECTED;
   } else {
-    Serial.println("BME280 sensor initialized.");
+    bmp280_andur.status = SENSOR_OK;
   }
 
   // Accelerometer
   accelerometer.begin(Wire, LIS3DHTR_ADDRESS_UPDATED);
   delay(100);
   if (!accelerometer) {
-    Serial.println("LIS3DHTR didn't connect.");
+    lis3dht_andur.status = SENSOR_ERR_DISCONNECTED;
   } else {
-    Serial.println("LIS3DHTR sensor initialized.");
     accelerometer.setOutputDataRate(LIS3DHTR_DATARATE_50HZ);
+    lis3dht_andur.status = SENSOR_OK;
   }
   
   // Pre-fill the sound queue for the filter
   for (int i = 0; i < SOUND_QUEUE_LEN; i++) {
-    soundQueue[i] = analogRead(heli_andur.pin);
+    heli_andur.queue[i] = analogRead(heli_andur.pin);
     delay(2);
   }
 
-  // --- Start Timer Interrupt ---
+  // Start Timer Interrupt
   MsTimer2::set(10, checker_ISR);
   MsTimer2::start();
 }
 
-// --- MAIN LOOP ---
+
 void loop() {
+  // Nuppust anduri valimine ja menüü kuvamine
   handle_button();
 
-  read_light();
-  read_sound();
-  read_temp_humid();
-  read_pressure();
-  read_accel();
+  // Seriali CMD käsitlemine
+  if (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.equalsIgnoreCase("m1")) {
+      MENU.mode = MODE_LIGHT;
+      tone(BUZZER.pin, 800, 150);
+    } else if (cmd.equalsIgnoreCase("m2")) {
+      MENU.mode = MODE_SOUND;
+      tone(BUZZER.pin, 800, 150);
+    } else if (cmd.equalsIgnoreCase("m3")) {
+      MENU.mode = MODE_TEMP_HUMID;
+      tone(BUZZER.pin, 800, 150);
+    } else if (cmd.equalsIgnoreCase("m4")) {
+      MENU.mode = MODE_PRESSURE;
+      tone(BUZZER.pin, 800, 150);
+    } else if (cmd.equalsIgnoreCase("m5")) {
+      MENU.mode = MODE_ACCEL;
+      tone(BUZZER.pin, 800, 150);
+    } else if (cmd.equalsIgnoreCase("m0")) {
+      MENU.mode = MODE_NONE;
+      tone(BUZZER.pin, 800, 150);
+    } else {
+      Serial.println("Unknown command. Use m0, m1, m2, m3, m4, or m5.");
+    }
+  }
 
-  if (isInMenuMode) {
+  if (MENU.isActive) {
     display_menu();
   } else {
-    switch (currentMode) {
-      case MODE_LIGHT:      display_light();      break;
-      case MODE_SOUND:      display_sound();      break;
-      case MODE_TEMP_HUMID: display_temp_humid(); break;
-      case MODE_PRESSURE:   display_pressure();   break;
-      case MODE_ACCEL:      display_accel();      break;
+    switch (MENU.mode) {
+      case MODE_LIGHT:
+        read_light();
+        print_light();
+        display_light();
+        break;
+      case MODE_SOUND:
+        read_sound();
+        print_sound();
+        display_sound();
+        break;
+      case MODE_TEMP_HUMID:
+        read_temp_humid();
+        print_temp_humid();
+        display_temp_humid();
+        break;
+      case MODE_PRESSURE:
+        read_pressure();
+        print_pressure();
+        display_pressure();
+        break;
+      case MODE_ACCEL:
+        read_accel();
+        display_accel();
+        print_accel();
+        break;
+      case MODE_NONE:
+      default:
+        break;
     }
   }
 }
 
-/************************************************************************** */
-// --- BUTTON HANDLING LOGIC ---
+/***************************************************************************/
+
+// INTERRUPT SERVICE ROUTINE (ISR)
+void checker_ISR() {
+  static int led_blink_counter = 0;
+
+  if (LED.state) {
+    digitalWrite(LED.pin, HIGH);
+    led_blink_counter++;
+
+    if (led_blink_counter > 10) {
+      led_blink_counter = 0;
+      LED.state = false;
+      digitalWrite(LED.pin, LOW);
+    }
+  }
+  if (digitalRead(BTN.pin) == HIGH) {
+    BTN.counter++;
+  } else {
+    BTN.counter = 0;
+  }
+}
+
+// BUTTON HANDLING LOGIC
 void handle_button() {
   static bool buttonWasPressed = false;
 
-  if (pressCounter > 0) {
+  if (BTN.counter > 0) {
     buttonWasPressed = true;
-    ledBlinkEnable = true;
-    if (pressCounter > LONG_PRESS_CLICKS) {
-      isInMenuMode = !isInMenuMode;
-      tone(BUZZER_PIN, 800, 150);
-      while (digitalRead(BUTTON_PIN) == HIGH) {
+    LED.state = true;
+
+    if (BTN.counter > BTN.long_press) {
+      MENU.isActive = !MENU.isActive;
+      tone(BUZZER.pin, 800, 150);
+      while (digitalRead(BTN.pin) == HIGH) {
         delay(10);
       }
-      pressCounter = 0;
+      BTN.counter = 0;
       buttonWasPressed = false;
     }
   } 
   else if (buttonWasPressed) {
     buttonWasPressed = false;
 
-    if (isInMenuMode) {
-      int selected = analogRead(ROTARY_PIN) / 204.8 + 1;
+    if (MENU.isActive) {
+      int selected = analogRead(ROTARY.pin) / 204.8 + 1;
       Serial.println( selected);
       if (selected >= MODE_LIGHT && selected <= MODE_ACCEL) {
-        currentMode = (ProgramMode)selected;
+        MENU.mode = (ProgramMode)selected;
       }
-      isInMenuMode = false;
-      tone(BUZZER_PIN, 500, 50);
+      MENU.isActive = false;
+      tone(BUZZER.pin, 500, 50);
     }
   }
 }
 
 
-// --- DISPLAY FUNCTIONS ---
+// DISPLAY FUNCTIONS
 void display_menu() {
-  int n = analogRead(ROTARY_PIN) / 204.8 + 1;
+  int n = analogRead(ROTARY.pin) / 204.8 + 1;
   u8g2.firstPage();
+
   do {
     u8g2.setFont(u8g2_font_ncenB10_tr);
     u8g2.drawStr(18, 12, "SELECT MODE");
@@ -314,6 +405,11 @@ void display_menu() {
 
 void read_light() {
   valgus_andur.value = analogRead(valgus_andur.pin);
+}
+
+void print_light() {
+  Serial.print("Light: ");
+  Serial.println(valgus_andur.value);
 }
 
 
@@ -346,9 +442,14 @@ void read_sound() {
   heli_andur.value = analogRead(heli_andur.pin);
 }
 
+void print_sound() {
+  Serial.print("Sound: ");
+  Serial.println(heli_andur.value);
+}
+
 
 void display_sound() {
-  int s = filter_sound(heli_andur.value, soundQueue, SOUND_QUEUE_LEN);
+  int s = filter_sound(heli_andur.value, heli_andur.queue, SOUND_QUEUE_LEN);
 
   u8g2.firstPage();
 
@@ -364,6 +465,14 @@ void display_sound() {
 void read_temp_humid() {
   dht_andur.humid = dht.readHumidity();
   dht_andur.temp = dht.readTemperature();
+}
+
+void print_temp_humid() {
+  Serial.print("Temp: ");
+  Serial.print(dht_andur.temp, 1);
+  Serial.print(" Humid: ");
+  Serial.print(dht_andur.humid, 0);
+  Serial.println();
 }
 
 void display_temp_humid() {
@@ -387,6 +496,11 @@ void display_temp_humid() {
 void read_pressure() {
   bmp280_andur.pressure = bmp280.getPressure(); // Pa
 }
+
+void print_pressure() {
+  Serial.print("Pressure: ");
+  Serial.println(bmp280_andur.pressure / 100.0F, 2);
+}
   
 void display_pressure() {
   u8g2.firstPage();
@@ -407,7 +521,17 @@ void read_accel() {
   lis3dht_andur.z = accelerometer.getAccelerationZ();
 }
 
+void print_accel() {
+  Serial.print("X: "); Serial.print(lis3dht_andur.x, 2);
+  Serial.print(" Y: "); Serial.print(lis3dht_andur.y, 2);
+  Serial.print(" Z: "); Serial.println(lis3dht_andur.z, 2);
+}
+
 void display_accel() {
+  // Variables for accelerometer ball position
+  static int ball_x = 80;
+  static int ball_y = 35;
+
   if (lis3dht_andur.y > 0.2) {
     ball_y -= (lis3dht_andur.y * 2);
   }
@@ -435,18 +559,26 @@ void display_accel() {
   } while (u8g2.nextPage());
 }
 
-// --- UTILITY FUNCTIONS ---
+
 int filter_sound(int newData, int queue[], int len) {
   int max_val = newData;
   int min_val = newData;
   long sum = newData;
+
   for (int i = len - 1; i > 0; i--) {
     queue[i] = queue[i - 1];
-    if (queue[i] > max_val) max_val = queue[i];
-    if (queue[i] < min_val) min_val = queue[i];
+
+    if (queue[i] > max_val) {
+      max_val = queue[i];
+    }
+    if (queue[i] < min_val) {
+      min_val = queue[i];
+    }
     sum += queue[i];
   }
+
   queue[0] = newData;
+
   if (len > 2) {
     sum = sum - max_val - min_val;
     return sum / (len - 2);
